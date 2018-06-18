@@ -7,6 +7,7 @@ import android.hardware.Camera;
 import android.media.ImageReader;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Message;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
@@ -40,6 +41,7 @@ import java.util.List;
 
 import ht.bean.Coordinate;
 import ht.bean.LedLine;
+import ht.thread.ImageThread;
 
 public class LocationActivity extends AppCompatActivity implements CameraBridgeViewBase.CvCameraViewListener2{
 
@@ -52,6 +54,8 @@ public class LocationActivity extends AppCompatActivity implements CameraBridgeV
     private Mat mRgba;
     private ImageView mImageView;
     private ImageView mDivideImg;
+
+    private ImageThread mImageThread;
 
 
     int[][] XY = new int[3][2];
@@ -87,6 +91,28 @@ public class LocationActivity extends AppCompatActivity implements CameraBridgeV
         mCameraView.setCvCameraViewListener(this);
         mCameraView.setCameraIndex(CameraBridgeViewBase.CAMERA_ID_FRONT);
 
+        mImageThread = new ImageThread();
+        mImageThread.setHandlePictureListener(new ImageThread.HandlerPicture() {
+            @Override
+            public void handle() {
+                handlePicture();
+            }
+
+            @Override
+            public int getCount(Mat img) {
+                return getLedLineCount(img);
+            }
+
+            @Override
+            public void isCollinear(List<Coordinate> X, List<Coordinate> Y) {
+                isCollinear(X, Y);
+            }
+
+            @Override
+            public void getLocation() {
+                getLocation();
+            }
+        });
     }
 
     @Override
@@ -236,13 +262,14 @@ public class LocationActivity extends AppCompatActivity implements CameraBridgeV
             mLoaderCallback.onManagerConnected(LoaderCallbackInterface.SUCCESS);
         }
 
-        handlePicture();
+//        handlePicture();
+        mImageThread.handlePic();
 
     }
 
     private List<Integer> mLedLineList;
 
-    private void handlePicture() {
+    public void handlePicture() {
         Mat resMat = new Mat();
         Mat disMat = new Mat();
         //获得图片并转换成矩阵
@@ -297,16 +324,24 @@ public class LocationActivity extends AppCompatActivity implements CameraBridgeV
 
         //检测led条纹数
 //        mLedLineList = MyUtils.LED_Pre_Process(img);
-        mLedLineList = getLedLineCount(img);
-        isCollinear(X, Y);
-        getLocation();
+        mLedLineList = mImageThread.getLedLineCount(img);
+        mImageThread.isCollinear(X, Y);
         Log.e("TAG", "img的大小："+img.size());
 //        img.add(MyUtils.HoughPrecess(img.get(img.size()-1)));
 
-        Bitmap led = Bitmap.createBitmap(img.get(img.size()-3).cols(), img.get(img.size()-3).rows(), Bitmap.Config.ARGB_8888);
-        Utils.matToBitmap(img.get(img.size()-3), led);
-        mDivideImg.setImageBitmap(led);
+
     }
+
+//    private Handler mHandler = new Handler(new Handler.Callback() {
+//        @Override
+//        public boolean handleMessage(Message msg) {
+//
+////            Bitmap led = Bitmap.createBitmap(img.get(img.size()-3).cols(), img.get(img.size()-3).rows(), Bitmap.Config.ARGB_8888);
+////            Utils.matToBitmap(img.get(img.size()-3), led);
+////            mDivideImg.setImageBitmap(led);
+//            return false;
+//        }
+//    })
 
     private void getLed(Mat resMat, Mat disMat, List<Mat> img, List<Coordinate> X, List<Coordinate> Y, List<Integer> S) {
         int count = 1;
@@ -455,12 +490,51 @@ public class LocationActivity extends AppCompatActivity implements CameraBridgeV
         return true;
     }
 
+    public int getLedLineCount(Mat img) {
+        int threhold = 2;
+        int lastColor = 0;
+        int curColor = 0;
+        boolean isAWhiteLine = false;
+        //取最中间一列
+        int middleIndex = img.rows() / 2;
+        int sameCount = 0;
+        int count = 0;
+        for (int i = 0; i < img.cols(); i++) {
+            curColor = (int) img.get(i, middleIndex)[0];
+            if (isAWhiteLine) {
+                if (curColor == 255) {
+                    sameCount = 0;
+                }
+                if (lastColor == curColor && curColor == 0) {
+                    sameCount++;
+                }
+                if (sameCount > threhold) {
+                    isAWhiteLine = false;
+                }
+                lastColor = curColor;
+            } else {
+                if (curColor == 0) {
+                    sameCount = 0;
+                }
+                if (lastColor == curColor && curColor == 255) {
+                    sameCount++;
+                }
+                if (sameCount >= threhold) {
+                    isAWhiteLine = true;
+                    count++;
+                }
+                lastColor = curColor;
+            }
+        }
+        return count;
+    }
+
     /**
      * 计算 led 条纹数
      * @param imgs
      * @return
      */
-    private ArrayList<Integer> getLedLineCount(List<Mat> imgs) {
+    public ArrayList<Integer> getLedLineCountgetLedLineCount(List<Mat> imgs) {
         ArrayList<Integer> ledLineCountList = new ArrayList<Integer>();
         int threhold = 2;
         int lastColor = 0;
@@ -615,8 +689,8 @@ public class LocationActivity extends AppCompatActivity implements CameraBridgeV
         double XX = (c2 * b1 - c1 * b2) / (a1*b2 - a2 * b1);
         double YY = (c2 * a1 - c1 * a2) / (a2*b1 - a1 * b2);
 
-        double xx = XX / 10;
-        double yy = YY / 10;
+        final double xx = XX / 10;
+        final double yy = YY / 10;
         double zz = 150 - H / 10;
 
 //        y = ((X[1]-X[0])*r3 - (X[1]-X[2])*r1 + (X[0]-X[2])*r2
@@ -629,8 +703,13 @@ public class LocationActivity extends AppCompatActivity implements CameraBridgeV
 //                + (Y[1]-Y[2])*x1 - (Y[1]-Y[0])*x3 - (Y[0]-Y[2])*x2)
 //                / (2*(X[0]*Y[1]-X[1]*Y[0]-X[0]*Y[2]+X[2]*Y[0]-X[2]*Y[1]+X[1]*Y[2]));
 
-        Toast.makeText(this, "x:" + xx + " y:" + yy, Toast.LENGTH_SHORT).show();
-        Log.d("htout", "x:" + xx + "y:" + yy);
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                Toast.makeText(LocationActivity.this, "x:" + xx + " y:" + yy, Toast.LENGTH_SHORT).show();
+                Log.d("htout", "x:" + xx + "y:" + yy);
+            }
+        });
 
     }
 
